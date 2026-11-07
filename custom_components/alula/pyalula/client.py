@@ -57,6 +57,31 @@ def _parse_device_type(device_type: str) -> "ZoneType":
     return ZoneType.OTHER
 
 
+# deviceType values that mean "nothing is enrolled in this slot"
+_UNUSED_DEVICE_TYPES = {"", "none", "unused", "notused", "not_used", "unassigned", "disabled", "0"}
+
+
+def _is_programmed(cfg: dict) -> bool:
+    """Return True if a zoneConfiguration entry describes a real, enrolled zone.
+
+    The panel exposes every slot up to maxZones (64). A slot counts as
+    unprogrammed only when it has neither a name nor a real device type, so if
+    in doubt a zone is shown rather than hidden.
+    """
+    if not cfg:
+        return False
+    device_type = str(cfg.get("deviceType") or "").strip().lower()
+    name = str(cfg.get("zoneName") or "").strip()
+    return device_type not in _UNUSED_DEVICE_TYPES or bool(name)
+
+
+def _default_zone_name(idx: str) -> str:
+    try:
+        return f"Zone {int(idx) + 1:02d}"
+    except ValueError:
+        return f"Zone {idx}"
+
+
 # Map public arm mode strings → byte codes the WebSocket expects
 _ARM_MODE_MAP: dict[str, int] = {
     "disarm": ARM_LEVEL_DISARM,
@@ -105,6 +130,7 @@ class AlulaClient:
         # Latest zone data received from WebSocket
         self._zones: dict[str, Zone] = {}  # keyed by zone index string (0-based)
         self._zone_configs: dict[str, dict] = {}  # zone config data keyed by index
+        self._zone_status: dict[str, dict] = {}   # latest raw zoneStatus per index (any order of arrival)
 
         # Previous keypad armed flag for transition detection
         self._prev_keypad_armed: bool | None = None
@@ -119,10 +145,19 @@ class AlulaClient:
         # Optional callback fired when keypad indicates an arm state transition
         self.on_arm_state_change: callable | None = None
 
+        # Optional callback fired when a known zone changes open/bypassed state
+        # (from a poll response or an unsolicited push from the panel)
+        self.on_zone_change: callable | None = None
+
     @property
     def ws_connected(self) -> bool:
         """Whether the WebSocket is currently open."""
         return self._ws is not None and not self._ws.closed
+
+    @property
+    def zones(self) -> list[Zone]:
+        """Programmed zones only, ordered by zone index."""
+        return sorted(self._zones.values(), key=lambda z: int(z.id) if z.id.isdigit() else 999)
 
     # ------------------------------------------------------------------
     # Context manager
@@ -237,7 +272,7 @@ class AlulaClient:
             items[0],
         )
         self._panel_id = str(panel_data["id"])
-        zones = list(self._zones.values())
+        zones = self.zones
         panel = AlarmPanel.from_api(panel_data, zones=zones)
         return panel
 
@@ -353,8 +388,11 @@ class AlulaClient:
 
         # sendMfd: response to requestMfd — payload is a list of named objects
         if cmdrsp == "sendMfd":
+            changed = False
             for item in data.get("payload", []):
-                self._ingest_named_payload(item)
+                changed |= self._ingest_named_payload(item)
+            if changed:
+                self._notify_zone_change()
             return
 
         # virtualKeypadOutput: pushed arm/display state from the panel
@@ -365,30 +403,78 @@ class AlulaClient:
             return
 
         # Fallback: some servers push zone events at the top level (older firmware)
-        self._ingest_named_payload(msg.get("payload", {}))
+        if self._ingest_named_payload(msg.get("payload", {})):
+            self._notify_zone_change()
 
-    def _ingest_named_payload(self, item: dict) -> None:
+    def _notify_zone_change(self) -> None:
+        if self.on_zone_change:
+            try:
+                self.on_zone_change()
+            except Exception:  # never let a listener kill the receive loop
+                _LOGGER.exception("on_zone_change callback failed")
+
+    def _upsert_zone(self, idx: str) -> tuple[Zone | None, bool]:
+        """Return (zone, created) for idx, or (None, False) if it is not programmed."""
+        cfg = self._zone_configs.get(idx)
+        if not cfg or not _is_programmed(cfg):
+            return None, False
+        zone = self._zones.get(idx)
+        created = zone is None
+        if created:
+            zone = Zone(
+                id=idx,
+                name=cfg.get("zoneName") or _default_zone_name(idx),
+                zone_type=_parse_device_type(cfg.get("deviceType", "")),
+                is_open=False,
+            )
+            self._zones[idx] = zone
+        else:
+            zone.name = cfg.get("zoneName") or zone.name
+            zone.zone_type = _parse_device_type(cfg.get("deviceType", ""))
+        return zone, created
+
+    @staticmethod
+    def _apply_status(zone: Zone, value: dict) -> bool:
+        """Apply a raw zoneStatus value; return True if open/bypassed changed."""
+        is_open = bool(value.get("open", False))
+        is_bypassed = bool(value.get("bypassed", False))
+        changed = zone.is_open != is_open or zone.is_bypassed != is_bypassed
+        zone.is_open = is_open
+        zone.is_bypassed = is_bypassed
+        zone.raw = value
+        return changed
+
+    def _ingest_named_payload(self, item: dict) -> bool:
         """Parse a single payload entry from a sendMfd response.
 
         Entries use the items[] format:
           {"name": "zoneStatus", "indexFirst": 0, "indexLast": N,
            "items": [{"index": 0, "value": {...}}, ...]}
+
+        Returns True if an already-known zone changed open/bypassed state.
+        Zones are only created for slots whose zoneConfiguration shows
+        something is programmed; status that arrives before its configuration
+        is cached and applied once the configuration is seen.
         """
         if not isinstance(item, dict):
-            return
+            return False
         name = item.get("name", "")
+        changed = False
 
         if name == "zoneConfiguration":
             for entry in item.get("items", []):
                 idx = str(entry.get("index", "?"))
                 cfg = entry.get("value", {})
+                _LOGGER.debug("Zone %s config: %s", idx, cfg)
                 if not cfg:
                     continue
                 self._zone_configs[idx] = cfg
-                # Propagate name/type to existing zone object
-                if idx in self._zones:
-                    self._zones[idx].name = cfg.get("zoneName", self._zones[idx].name)
-                    self._zones[idx].zone_type = _parse_device_type(cfg.get("deviceType", ""))
+                if not _is_programmed(cfg):
+                    self._zones.pop(idx, None)
+                    continue
+                zone, created = self._upsert_zone(idx)
+                if created and idx in self._zone_status:
+                    self._apply_status(zone, self._zone_status[idx])
 
         elif name == "zoneStatus":
             for entry in item.get("items", []):
@@ -396,18 +482,12 @@ class AlulaClient:
                 value = entry.get("value", {})
                 if not value:
                     continue
-                cfg = self._zone_configs.get(idx, {})
-                if idx not in self._zones:
-                    zone_name = cfg.get("zoneName") or f"Zone {int(idx) + 1:02d}"
-                    self._zones[idx] = Zone(
-                        id=idx,
-                        name=zone_name,
-                        zone_type=_parse_device_type(cfg.get("deviceType", "")),
-                        is_open=False,
-                    )
-                self._zones[idx].is_open = bool(value.get("open", False))
-                self._zones[idx].is_bypassed = bool(value.get("bypassed", False))
-                self._zones[idx].raw = value
+                self._zone_status[idx] = value
+                zone, created = self._upsert_zone(idx)
+                if zone is None:
+                    continue  # unprogrammed slot, or configuration not seen yet
+                if self._apply_status(zone, value) and not created:
+                    changed = True
 
         elif name == "panelDefinition":
             value = item.get("value", {})
@@ -425,13 +505,23 @@ class AlulaClient:
                 _LOGGER.debug("Highest used zone index=%d", self._highest_zone_index)
 
         elif name in ("zoneUpdate", "zoneFault", "zoneRestore"):
-            # Single-zone push (legacy flat format)
+            # Single-zone push (legacy flat format) — only for zones we already know
             value = item.get("value", item)
             try:
-                zone = Zone.from_ws(value if isinstance(value, dict) else item)
-                self._zones[zone.id] = zone
+                update = Zone.from_ws(value if isinstance(value, dict) else item)
             except Exception:
-                pass
+                return False
+            zone = self._zones.get(update.id)
+            if zone is not None:
+                changed = (
+                    zone.is_open != update.is_open
+                    or zone.is_bypassed != update.is_bypassed
+                )
+                zone.is_open = update.is_open
+                zone.is_bypassed = update.is_bypassed
+                zone.raw = update.raw
+
+        return changed
 
     def _update_arm_state_from_keypad(self, kp: dict) -> None:
         """Detect arm-state transitions from virtualKeypadOutput and request a REST refresh.
@@ -496,7 +586,12 @@ class AlulaClient:
         # Wait for panel responses (arrive as pushed sendMfd events)
         await asyncio.sleep(WS_RESPONSE_TIMEOUT)
 
-        return list(self._zones.values())
+        zones = self.zones
+        _LOGGER.debug(
+            "Alula: %d programmed zone(s) of %d slots: %s",
+            len(zones), max_index + 1, [f"{z.id}:{z.name}" for z in zones],
+        )
+        return zones
 
     # ------------------------------------------------------------------
     # WebSocket: arm / disarm

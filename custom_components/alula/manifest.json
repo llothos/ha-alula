@@ -1,11 +1,12 @@
 {
   "domain": "alula",
   "name": "Alula",
-  "version": "0.1.1",
-  "documentation": "https://github.com/pschorf/ha-alula",
-  "requirements": ["pyalula==0.1.1"],
+  "version": "0.2.0",
+  "documentation": "https://github.com/llothos/ha-alula",
+  "requirements": [],
   "dependencies": [],
   "codeowners": [],
   "iot_class": "cloud_polling",
-  "config_flow": true
+  "config_flow": true,
+  "issue_tracker": "https://github.com/llothos/ha-alula/issues"
 }

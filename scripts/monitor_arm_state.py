@@ -18,7 +18,7 @@ import sys
 from datetime import datetime
 
 # Allow running from project root without installing
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "custom_components", "alula"))
 
 from pyalula.client import AlulaClient  # noqa: E402
 

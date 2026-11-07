@@ -19,10 +19,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DATA_CLIENT, DATA_COORDINATOR, DOMAIN
 from .coordinator import AlulaCoordinator
 
-try:
-    from pyalula import AlulaClient, AlarmPanel, ArmState
-except ImportError:
-    pass
+from .pyalula import AlarmPanel, AlulaClient, ArmState
 
 _LOGGER = logging.getLogger(__name__)
 

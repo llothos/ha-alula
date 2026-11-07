@@ -12,16 +12,8 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from .const import CONF_PANEL_ID, DATA_CLIENT, DATA_COORDINATOR, DOMAIN
 from .coordinator import AlulaCoordinator
 
-# Import pyalula from the sibling directory during development.
-# In a published integration this would be a PyPI package.
-try:
-    from pyalula import AlulaClient
-    from pyalula.client import AlulaAuthError, AlulaApiError
-except ImportError as exc:
-    raise ImportError(
-        "pyalula library not found. Add the pyalula/ directory to PYTHONPATH "
-        "or install it with: pip install -e /path/to/ha-alula"
-    ) from exc
+from .pyalula import AlulaClient
+from .pyalula.client import AlulaApiError, AlulaAuthError
 
 _LOGGER = logging.getLogger(__name__)
 

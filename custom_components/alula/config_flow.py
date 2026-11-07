@@ -12,11 +12,8 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 
 from .const import CONF_PANEL_ID, DOMAIN
 
-try:
-    from pyalula import AlulaClient
-    from pyalula.client import AlulaAuthError, AlulaApiError
-except ImportError:
-    pass
+from .pyalula import AlulaClient
+from .pyalula.client import AlulaApiError, AlulaAuthError
 
 _LOGGER = logging.getLogger(__name__)
 

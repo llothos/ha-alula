@@ -5,22 +5,19 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 
-try:
-    from pyalula import AlulaClient, AlarmPanel
-    from pyalula.client import AlulaAuthError, AlulaApiError
-except ImportError:
-    pass
+from .pyalula import AlarmPanel, AlulaClient
+from .pyalula.client import AlulaApiError, AlulaAuthError
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class AlulaCoordinator(DataUpdateCoordinator["AlarmPanel"]):
-    """Polls the Alula REST API and refreshes zone state via WebSocket."""
+    """Polls the Alula REST API; zone changes are pushed in over the WebSocket."""
 
     def __init__(
         self,
@@ -38,6 +35,19 @@ class AlulaCoordinator(DataUpdateCoordinator["AlarmPanel"]):
         self._client = client
         self._panel_id = panel_id
         self._client.on_arm_state_change = self._on_arm_state_change
+        self._client.on_zone_change = self._on_zone_change
+
+    @callback
+    def _on_zone_change(self) -> None:
+        """A zone opened/closed/bypassed — push the new state to entities now.
+
+        Zone objects are updated in place by the client, so this just refreshes
+        the zone list and tells listeners; it does not wait for the next poll.
+        """
+        if self.data is None:
+            return
+        self.data.zones = self._client.zones
+        self.async_set_updated_data(self.data)
 
     def _on_arm_state_change(self) -> None:
         """Called by the client when a keypad push indicates an arm state transition."""

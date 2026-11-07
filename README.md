@@ -15,7 +15,7 @@ A [Home Assistant](https://www.home-assistant.io/) custom integration for [Alula
 
 1. Open HACS in your Home Assistant instance
 2. Go to **Integrations** > three-dot menu > **Custom repositories**
-3. Add `pschorf/ha-alula` as an **Integration**
+3. Add `llothos/ha-alula` as an **Integration**
 4. Click **Install**
 5. Restart Home Assistant
 
