@@ -64,11 +64,18 @@ _UNUSED_DEVICE_TYPES = {"", "none", "unused", "notused", "not_used", "unassigned
 def _is_programmed(cfg: dict) -> bool:
     """Return True if a zoneConfiguration entry describes a real, enrolled zone.
 
-    The panel exposes every slot up to maxZones (64). A slot counts as
-    unprogrammed only when it has neither a name nor a real device type, so if
-    in doubt a zone is shown rather than hidden.
+    The panel exposes every slot up to maxZones (64). A slot is unprogrammed
+    when its zoneSource is "disabled", or when it has neither a name nor a real
+    device type; if in doubt a zone is shown rather than hidden.
     """
     if not cfg:
+        return False
+    # The panel marks empty slots with zoneSource "disabled" (id 0). Once the
+    # cloud cache is fully populated it returns default names ("Zone 19") and a
+    # placeholder deviceType for those slots too, so name/deviceType alone
+    # can't be trusted. Check the source first.
+    source = str(cfg.get("zoneSourceEnum") or "").strip().lower()
+    if source == "disabled" or (cfg.get("zoneSource") == 0 and not cfg.get("id")):
         return False
     device_type = str(cfg.get("deviceType") or "").strip().lower()
     name = str(cfg.get("zoneName") or "").strip()
@@ -272,6 +279,16 @@ class AlulaClient:
             items[0],
         )
         self._panel_id = str(panel_data["id"])
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            # Diagnostic: show which REST attributes could carry live zone/open
+            # state (the Alula app may read door state from here, not the WS).
+            attrs = panel_data.get("attributes", panel_data)
+            interesting = {
+                k: v for k, v in attrs.items()
+                if any(t in k.lower() for t in ("zone", "open", "trouble", "fault", "event", "status", "sensor"))
+            }
+            _LOGGER.debug("REST attribute keys: %s", sorted(attrs.keys()))
+            _LOGGER.debug("REST zone/status attributes: %s", interesting)
         zones = self.zones
         panel = AlarmPanel.from_api(panel_data, zones=zones)
         return panel
