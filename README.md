@@ -1,5 +1,8 @@
 # Alula for Home Assistant
 
+This is still in testing phase.
+
+
 A [Home Assistant](https://www.home-assistant.io/) custom integration for [Alula](https://www.alula.com/) security alarm panels (Connect+, Helix, etc.).
 
 ## Features
