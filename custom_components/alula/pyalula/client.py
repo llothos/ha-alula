@@ -122,7 +122,17 @@ class AlulaClient:
             await client.disarm()
     """
 
-    def __init__(self, base_url: str = BASE_URL, ws_url: str = WS_URL) -> None:
+    def __init__(
+        self,
+        base_url: str = BASE_URL,
+        ws_url: str = WS_URL,
+        zone_refresh_interval: float = ZONE_REFRESH_INTERVAL,
+        zone_config_refresh_interval: float = ZONE_CONFIG_REFRESH_INTERVAL,
+    ) -> None:
+        # How often (seconds) to ask the panel for zoneStatus / a full rescan.
+        # Public so the integration can change them live from its options.
+        self.zone_refresh_interval = zone_refresh_interval
+        self.zone_config_refresh_interval = zone_config_refresh_interval
         self._base_url = base_url.rstrip("/")
         self._ws_url = ws_url
         self._session: aiohttp.ClientSession | None = None
@@ -592,9 +602,9 @@ class AlulaClient:
     ) -> list[Zone]:
         """Refresh zone data over the WebSocket, with as little traffic as possible.
 
-        - First run (or every ZONE_CONFIG_REFRESH_INTERVAL): scan every slot for
+        - First run (or every zone_config_refresh_interval): scan every slot for
           zoneConfiguration + zoneStatus, in batches of 3 like the web app.
-        - Afterwards: at most one refresh per ZONE_REFRESH_INTERVAL, asking only
+        - Afterwards: at most one refresh per zone_refresh_interval, asking only
           for zoneStatus of the programmed zones. Live changes arrive as pushes.
         """
         dev_id = device_id or self._panel_id
@@ -607,13 +617,13 @@ class AlulaClient:
             force
             or not known
             or self._last_config_fetch == 0.0
-            or (now - self._last_config_fetch) >= ZONE_CONFIG_REFRESH_INTERVAL
+            or (now - self._last_config_fetch) >= self.zone_config_refresh_interval
         )
 
         if (
             not full_scan
             and self._last_zone_fetch != 0.0
-            and (now - self._last_zone_fetch) < ZONE_REFRESH_INTERVAL
+            and (now - self._last_zone_fetch) < self.zone_refresh_interval
         ):
             return self.zones  # recent enough; pushes keep it current
 

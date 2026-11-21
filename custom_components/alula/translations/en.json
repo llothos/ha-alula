@@ -1,0 +1,46 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Alula",
+        "description": "Sign in with your Alula account to control your alarm panel.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "panel_id": "Panel ID"
+        },
+        "data_description": {
+          "username": "The email address you use to sign in to the Alula app.",
+          "password": "Your Alula account password.",
+          "panel_id": "Optional. Only needed if your account has multiple panels. You can find this in the Alula app under device settings."
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password. Please check your credentials.",
+      "cannot_connect": "Could not connect to the Alula API. Please check your internet connection.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "This Alula account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Alula update settings",
+        "description": "Live changes from the panel arrive as pushed events. These settings only control how often the integration asks the panel for a refresh. Lower values mean more load on the panel and Alula's servers, which matters most on systems with many zones.",
+        "data": {
+          "zone_refresh_minutes": "Zone refresh interval (minutes)",
+          "config_rescan_hours": "Full zone rescan interval (hours)",
+          "scan_interval": "Panel status poll (seconds)"
+        },
+        "data_description": {
+          "zone_refresh_minutes": "How often to ask the panel for the status of your programmed zones. Default 10.",
+          "config_rescan_hours": "How often to rescan all 64 zone slots to pick up programming changes. Default 6.",
+          "scan_interval": "How often to check arming state and whether the panel is online (talks to Alula's cloud only). Default 60."
+        }
+      }
+    }
+  }
+}
