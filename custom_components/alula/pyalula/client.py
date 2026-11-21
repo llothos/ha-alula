@@ -138,6 +138,13 @@ class AlulaClient:
         self._session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._ws_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._connect_lock = asyncio.Lock()
+        self._closing = False
+        self._ws_connected_once = False
+        self._keypad_enable_ok = True      # cleared if the panel NAKs virtualKeypadInput
+        self._keypad_request_id: str | None = None
+        self.panel_online = True           # last REST onlineStatus; skip catch-up reads while offline
         self._ws_ready: asyncio.Event = asyncio.Event()
 
         # Token state
@@ -193,6 +200,13 @@ class AlulaClient:
         await self.close()
 
     async def close(self) -> None:
+        self._closing = True
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
         if self._ws_task:
             self._ws_task.cancel()
             try:
@@ -307,6 +321,7 @@ class AlulaClient:
             _LOGGER.debug("REST zone/status attributes: %s", interesting)
         zones = self.zones
         panel = AlarmPanel.from_api(panel_data, zones=zones)
+        self.panel_online = panel.online
         return panel
 
     # ------------------------------------------------------------------
@@ -314,6 +329,11 @@ class AlulaClient:
     # ------------------------------------------------------------------
 
     async def connect_ws(self) -> None:
+        """Open the WebSocket (serialised so two callers never open two sockets)."""
+        async with self._connect_lock:
+            await self._connect_ws_locked()
+
+    async def _connect_ws_locked(self) -> None:
         """Open the WebSocket, wait for ready, then subscribe to device channels."""
         await self._maybe_refresh_token()
         if self._ws and not self._ws.closed:
@@ -343,36 +363,41 @@ class AlulaClient:
                 "subscribe": {"deviceId": self._panel_id},
             })
 
-        # Enable virtual keypad push stream (triggers virtualKeypadOutput events)
-        await self._ws_send({
-            "channel": WS_CHANNEL,
-            "id": str(uuid.uuid4()),
-            "send": {
-                "cmdrsp": "virtualKeypadInput",
-                "deviceId": self._panel_id,
-                "payload": {"enable": True},
-                "requestId": str(uuid.uuid4()),
-            },
-        })
+        # Enable virtual keypad push stream (triggers virtualKeypadOutput events).
+        # Some panels NAK this ("Unsupported command"); stop asking once they do.
+        if self._keypad_enable_ok:
+            self._keypad_request_id = str(uuid.uuid4())
+            await self._ws_send({
+                "channel": WS_CHANNEL,
+                "id": str(uuid.uuid4()),
+                "send": {
+                    "cmdrsp": "virtualKeypadInput",
+                    "deviceId": self._panel_id,
+                    "payload": {"enable": True},
+                    "requestId": self._keypad_request_id,
+                },
+            })
 
-        # Request panel definition and highest used indexes so we know zone count
-        await self._ws_send({
-            "channel": WS_CHANNEL,
-            "id": str(uuid.uuid4()),
-            "send": {
-                "cmdrsp": "requestMfd",
-                "deviceId": self._panel_id,
-                "payload": [
-                    {"name": "panelDefinition"},
-                    {"name": "highestUsedIndexes"},
-                ],
-                "requestId": str(uuid.uuid4()),
-            },
-        })
+        # Panel definition / highest used indexes only need fetching once; the
+        # socket is re-opened every ~10 minutes and the answers never change.
+        if not self._ws_connected_once or self._highest_zone_index is None:
+            await self._ws_send({
+                "channel": WS_CHANNEL,
+                "id": str(uuid.uuid4()),
+                "send": {
+                    "cmdrsp": "requestMfd",
+                    "deviceId": self._panel_id,
+                    "payload": [
+                        {"name": "panelDefinition"},
+                        {"name": "highestUsedIndexes"},
+                    ],
+                    "requestId": str(uuid.uuid4()),
+                },
+            })
+            # Allow panel time to respond before zone requests
+            await asyncio.sleep(WS_RESPONSE_TIMEOUT)
 
-        # Allow panel time to respond with definition/indexes before zone requests
-        await asyncio.sleep(WS_RESPONSE_TIMEOUT)
-
+        self._ws_connected_once = True
         _LOGGER.debug("Alula WebSocket connected and subscribed")
 
     async def _ws_receive_loop(self) -> None:
@@ -392,6 +417,34 @@ class AlulaClient:
             _LOGGER.warning("Alula WebSocket receive loop died: %s", exc)
         finally:
             _LOGGER.debug("Alula WebSocket receive loop exited")
+            if not self._closing and asyncio.current_task() is self._ws_task:
+                self._schedule_reconnect()
+
+    def _schedule_reconnect(self) -> None:
+        """Re-open the socket right away: the server closes it about every 10 min."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(
+            self._reconnect_ws(), name="alula-ws-reconnect"
+        )
+
+    async def _reconnect_ws(self) -> None:
+        delay = 1.0
+        while not self._closing:
+            try:
+                await asyncio.sleep(delay)
+                await self.connect_ws()
+                # Pushes sent while we were disconnected are lost, so catch up
+                # (status of programmed zones only), unless the panel is offline.
+                if self.panel_online:
+                    await self.fetch_zone_statuses(status_only=True)
+                _LOGGER.debug("Alula WebSocket reconnected")
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - keep trying with backoff
+                _LOGGER.debug("Alula WebSocket reconnect failed (%s); retry in %.0fs", exc, delay)
+                delay = min(delay * 2, 300.0)
 
     async def _handle_ws_message(self, msg: dict) -> None:
         """Dispatch an incoming WebSocket message."""
@@ -401,6 +454,17 @@ class AlulaClient:
         if msg.get("message") == "ready" and "sessionId" in msg:
             _LOGGER.debug("WS ready, sessionId=%s", msg.get("sessionId"))
             self._ws_ready.set()
+            return
+
+        # Panel refused the keypad-enable command: don't send it again
+        data = msg.get("event", {}).get("data", {})
+        if (
+            data.get("cmdrsp") == "nak"
+            and self._keypad_request_id
+            and data.get("requestId") == self._keypad_request_id
+        ):
+            self._keypad_enable_ok = False
+            _LOGGER.debug("Panel NAKed virtualKeypadInput; will not send it again")
             return
 
         # All other messages: ingest zone/arm state data
@@ -598,7 +662,10 @@ class AlulaClient:
         return batches
 
     async def fetch_zone_statuses(
-        self, device_id: str | None = None, force: bool = False
+        self,
+        device_id: str | None = None,
+        force: bool = False,
+        status_only: bool = False,
     ) -> list[Zone]:
         """Refresh zone data over the WebSocket, with as little traffic as possible.
 
@@ -620,8 +687,12 @@ class AlulaClient:
             or (now - self._last_config_fetch) >= self.zone_config_refresh_interval
         )
 
+        if status_only and known:
+            full_scan = False  # catch-up after a reconnect: status only, no throttle
+
         if (
             not full_scan
+            and not status_only
             and self._last_zone_fetch != 0.0
             and (now - self._last_zone_fetch) < self.zone_refresh_interval
         ):
