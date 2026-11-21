@@ -2,6 +2,17 @@
 
 This is still in testing phase.
 
+November 21, 2026 update:
+The update intervals are now settings in the UI. I haven’t run them inside Home Assistant, so you’ll be the first to try them.
+
+Where to find them: Settings → Devices & Services → Alula → Configure. There are three settings:
+
+Setting	Default	Allowed range
+Zone refresh interval (minutes)	    10	1–1440
+Full zone rescan interval (hours)	6	1–168
+Panel status poll (seconds)	        60	15–3600
+
+
 
 A [Home Assistant](https://www.home-assistant.io/) custom integration for [Alula](https://www.alula.com/) security alarm panels (Connect+, Helix, etc.).
 
