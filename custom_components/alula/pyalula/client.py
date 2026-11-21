@@ -33,6 +33,8 @@ from .const import (
     WS_RESPONSE_TIMEOUT,
     WS_URL,
     ZONE_BATCH_SIZE,
+    ZONE_CONFIG_REFRESH_INTERVAL,
+    ZONE_REFRESH_INTERVAL,
 )
 
 PATH_SELF = "/rest/v1/self"
@@ -138,6 +140,10 @@ class AlulaClient:
         self._zones: dict[str, Zone] = {}  # keyed by zone index string (0-based)
         self._zone_configs: dict[str, dict] = {}  # zone config data keyed by index
         self._zone_status: dict[str, dict] = {}   # latest raw zoneStatus per index (any order of arrival)
+
+        # Throttling of requestMfd traffic (monotonic timestamps; 0 = never)
+        self._last_zone_fetch: float = 0.0
+        self._last_config_fetch: float = 0.0
 
         # Previous keypad armed flag for transition detection
         self._prev_keypad_armed: bool | None = None
@@ -570,32 +576,66 @@ class AlulaClient:
     # WebSocket: zone status request
     # ------------------------------------------------------------------
 
-    async def fetch_zone_statuses(self, device_id: str | None = None) -> list[Zone]:
-        """Request zone statuses over WebSocket and return the result.
+    @staticmethod
+    def _index_batches(indexes: list[int]) -> list[tuple[int, int]]:
+        """Group sorted zone indexes into contiguous (first, last) runs of <= batch size."""
+        batches: list[tuple[int, int]] = []
+        for idx in indexes:
+            if batches and idx == batches[-1][1] + 1 and idx - batches[-1][0] < ZONE_BATCH_SIZE:
+                batches[-1] = (batches[-1][0], idx)
+            else:
+                batches.append((idx, idx))
+        return batches
 
-        Requests zoneConfiguration+zoneStatus in batches of 3 (matching the
-        web app's behaviour) so the panel firmware doesn't drop large responses.
+    async def fetch_zone_statuses(
+        self, device_id: str | None = None, force: bool = False
+    ) -> list[Zone]:
+        """Refresh zone data over the WebSocket, with as little traffic as possible.
+
+        - First run (or every ZONE_CONFIG_REFRESH_INTERVAL): scan every slot for
+          zoneConfiguration + zoneStatus, in batches of 3 like the web app.
+        - Afterwards: at most one refresh per ZONE_REFRESH_INTERVAL, asking only
+          for zoneStatus of the programmed zones. Live changes arrive as pushes.
         """
         dev_id = device_id or self._panel_id
         if not dev_id:
             raise AlulaApiError("Panel ID unknown — call get_panel_status() first")
 
+        now = time.monotonic()
+        known = sorted(int(i) for i in self._zones if str(i).isdigit())
+        full_scan = (
+            force
+            or not known
+            or self._last_config_fetch == 0.0
+            or (now - self._last_config_fetch) >= ZONE_CONFIG_REFRESH_INTERVAL
+        )
+
+        if (
+            not full_scan
+            and self._last_zone_fetch != 0.0
+            and (now - self._last_zone_fetch) < ZONE_REFRESH_INTERVAL
+        ):
+            return self.zones  # recent enough; pushes keep it current
+
         await self._ensure_ws()
 
-        # Determine range to request
-        max_index = self._highest_zone_index if self._highest_zone_index is not None \
-            else self._max_zones - 1
+        if full_scan:
+            max_index = self._highest_zone_index if self._highest_zone_index is not None \
+                else self._max_zones - 1
+            batches = [
+                (first, min(first + ZONE_BATCH_SIZE - 1, max_index))
+                for first in range(0, max_index + 1, ZONE_BATCH_SIZE)
+            ]
+            names = ("zoneConfiguration", "zoneStatus")
+        else:
+            batches = self._index_batches(known)
+            names = ("zoneStatus",)
 
-        # Send batched requests (3 zones per batch, matching the web app)
-        for first in range(0, max_index + 1, ZONE_BATCH_SIZE):
-            last = min(first + ZONE_BATCH_SIZE - 1, max_index)
+        for first, last in batches:
             inner = {
                 "deviceId": dev_id,
                 "cmdrsp": "requestMfd",
-                "payload": [
-                    {"name": "zoneConfiguration", "indexFirst": first, "indexLast": last},
-                    {"name": "zoneStatus", "indexFirst": first, "indexLast": last},
-                ],
+                "payload": [{"name": n, "indexFirst": first, "indexLast": last} for n in names],
                 "requestId": str(uuid.uuid4()),
             }
             await self._ws_send({"channel": WS_CHANNEL, "id": str(uuid.uuid4()), "send": inner})
@@ -603,10 +643,15 @@ class AlulaClient:
         # Wait for panel responses (arrive as pushed sendMfd events)
         await asyncio.sleep(WS_RESPONSE_TIMEOUT)
 
+        self._last_zone_fetch = time.monotonic()
+        if full_scan:
+            self._last_config_fetch = self._last_zone_fetch
+
         zones = self.zones
         _LOGGER.debug(
-            "Alula: %d programmed zone(s) of %d slots: %s",
-            len(zones), max_index + 1, [f"{z.id}:{z.name}" for z in zones],
+            "Alula: %s refresh sent %d request(s); %d programmed zone(s): %s",
+            "full" if full_scan else "status-only", len(batches),
+            len(zones), [f"{z.id}:{z.name}" for z in zones],
         )
         return zones
 

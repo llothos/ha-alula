@@ -63,9 +63,13 @@ class AlulaCoordinator(DataUpdateCoordinator["AlarmPanel"]):
             if not self._client.ws_connected:
                 await self._client.connect_ws()
 
-            # Refresh zone state via WebSocket
-            zones = await self._client.fetch_zone_statuses(device_id=panel.id)
-            panel.zones = zones
+            # Refresh zone state via WebSocket (throttled in the client). Skip it
+            # entirely while the panel is offline: there is nothing fresh to get
+            # and the requests only add load.
+            if panel.online:
+                panel.zones = await self._client.fetch_zone_statuses(device_id=panel.id)
+            else:
+                panel.zones = self._client.zones
 
             return panel
 

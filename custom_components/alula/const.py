@@ -4,7 +4,7 @@ DOMAIN = "alula"
 
 CONF_PANEL_ID = "panel_id"
 
-DEFAULT_SCAN_INTERVAL = 30  # seconds
+DEFAULT_SCAN_INTERVAL = 60  # seconds (REST only; zone refresh is throttled separately)
 
 # Entry data keys
 DATA_CLIENT = "client"

@@ -46,6 +46,12 @@ WS_ACTION_SEND = "send"
 # Zones per batch request (matches web app behaviour; firmware drops large ranges)
 ZONE_BATCH_SIZE = 3
 
+# Traffic limits. The panel is reached through Alula's cloud, so every
+# requestMfd is load on the panel's connection. Real-time changes arrive as
+# pushed events; these requests are only a safety net.
+ZONE_REFRESH_INTERVAL = 600         # seconds between zoneStatus refreshes (programmed zones only)
+ZONE_CONFIG_REFRESH_INTERVAL = 21600  # seconds between full zoneConfiguration rescans (6 h)
+
 # -------------------------------------------------------------------
 # Timeouts / retry
 # -------------------------------------------------------------------

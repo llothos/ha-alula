@@ -44,9 +44,9 @@ async def async_setup_entry(
     # Create entities for current zones; new zones after restart will appear
     # on the next HA reload (acceptable for v0.1).
     panel: AlarmPanel = coordinator.data
-    async_add_entities(
-        AlulaZoneSensor(coordinator, zone) for zone in panel.zones
-    )
+    entities: list[BinarySensorEntity] = [AlulaPanelOnlineSensor(coordinator)]
+    entities.extend(AlulaZoneSensor(coordinator, zone) for zone in panel.zones)
+    async_add_entities(entities)
 
 
 class AlulaZoneSensor(CoordinatorEntity[AlulaCoordinator], BinarySensorEntity):
@@ -96,4 +96,34 @@ class AlulaZoneSensor(CoordinatorEntity[AlulaCoordinator], BinarySensorEntity):
 
     @property
     def available(self) -> bool:
-        return super().available and self._current_zone() is not None
+        # While the panel is offline the zone data is a stale cloud cache, so
+        # report "unavailable" instead of a misleading "closed".
+        panel: AlarmPanel | None = self.coordinator.data
+        online = panel.online if panel is not None else False
+        return super().available and online and self._current_zone() is not None
+
+
+class AlulaPanelOnlineSensor(CoordinatorEntity[AlulaCoordinator], BinarySensorEntity):
+    """Whether the panel is connected to Alula's cloud."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Panel online"
+    _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+
+    def __init__(self, coordinator: AlulaCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"alula_panel_online_{coordinator.data.id}"
+
+    @property
+    def is_on(self) -> bool | None:
+        panel: AlarmPanel | None = self.coordinator.data
+        return None if panel is None else panel.online
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        panel: AlarmPanel = self.coordinator.data
+        return DeviceInfo(
+            identifiers={(DOMAIN, panel.id)},
+            name=panel.name,
+            manufacturer="Alula",
+        )

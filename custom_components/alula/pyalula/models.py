@@ -87,6 +87,7 @@ class AlarmPanel:
     name: str
     arm_state: ArmState
     zones: list[Zone] = field(default_factory=list)
+    online: bool = True  # REST onlineStatus: panel's connection to Alula's cloud
     raw: dict = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -102,5 +103,6 @@ class AlarmPanel:
             name=attrs.get("friendlyName", "Alula Panel"),
             arm_state=arm_state,
             zones=zones or [],
+            online=bool(attrs.get("onlineStatus", True)),
             raw=data,
         )
