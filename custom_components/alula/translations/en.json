@@ -31,11 +31,13 @@
         "title": "Alula update settings",
         "description": "Live changes from the panel arrive as pushed events. These settings only control how often the integration asks the panel for a refresh. Lower values mean more load on the panel and Alula's servers, which matters most on systems with many zones.",
         "data": {
+          "live_updates": "Live door/zone updates (WebSocket)",
           "zone_refresh_minutes": "Zone refresh interval (minutes)",
           "config_rescan_hours": "Full zone rescan interval (hours)",
           "scan_interval": "Panel status poll (seconds)"
         },
         "data_description": {
+          "live_updates": "On (default): pushed door/zone events and periodic zone refreshes. Off: the integration only checks arming state and whether the panel is online through Alula's cloud, and opens no WebSocket to the panel (arm/disarm still works on demand). Turn it off to test whether live updates affect your panel's connection.",
           "zone_refresh_minutes": "How often to ask the panel for the status of your programmed zones. Default 10.",
           "config_rescan_hours": "How often to rescan all 64 zone slots to pick up programming changes. Default 6.",
           "scan_interval": "How often to check arming state and whether the panel is online (talks to Alula's cloud only). Default 60."

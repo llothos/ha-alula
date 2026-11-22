@@ -141,6 +141,9 @@ class AlulaClient:
         self._reconnect_task: asyncio.Task | None = None
         self._connect_lock = asyncio.Lock()
         self._closing = False
+        # False = REST-only mode: no WebSocket is opened by the integration
+        # (an arm/disarm command still opens one on demand).
+        self.ws_enabled = True
         self._ws_connected_once = False
         self._keypad_enable_ok = True      # cleared if the panel NAKs virtualKeypadInput
         self._keypad_request_id: str | None = None
@@ -217,6 +220,25 @@ class AlulaClient:
             await self._ws.close()
         if self._session and not self._session.closed:
             await self._session.close()
+
+    async def disconnect_ws(self) -> None:
+        """Close the WebSocket (and stop reconnecting) but keep the REST session."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await self._reconnect_task
+            except asyncio.CancelledError:
+                pass
+        task, self._ws_task = self._ws_task, None
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        if self._ws and not self._ws.closed:
+            await self._ws.close()
+        self._ws = None
 
     # ------------------------------------------------------------------
     # Authentication
@@ -417,7 +439,11 @@ class AlulaClient:
             _LOGGER.warning("Alula WebSocket receive loop died: %s", exc)
         finally:
             _LOGGER.debug("Alula WebSocket receive loop exited")
-            if not self._closing and asyncio.current_task() is self._ws_task:
+            if (
+                not self._closing
+                and self.ws_enabled
+                and asyncio.current_task() is self._ws_task
+            ):
                 self._schedule_reconnect()
 
     def _schedule_reconnect(self) -> None:
@@ -430,9 +456,11 @@ class AlulaClient:
 
     async def _reconnect_ws(self) -> None:
         delay = 1.0
-        while not self._closing:
+        while not self._closing and self.ws_enabled:
             try:
                 await asyncio.sleep(delay)
+                if not self.ws_enabled:
+                    return
                 await self.connect_ws()
                 # Pushes sent while we were disconnected are lost, so catch up
                 # (status of programmed zones only), unless the panel is offline.
@@ -674,6 +702,9 @@ class AlulaClient:
         - Afterwards: at most one refresh per zone_refresh_interval, asking only
           for zoneStatus of the programmed zones. Live changes arrive as pushes.
         """
+        if not self.ws_enabled:
+            return self.zones  # REST-only mode: never talk to the panel over WS
+
         dev_id = device_id or self._panel_id
         if not dev_id:
             raise AlulaApiError("Panel ID unknown — call get_panel_status() first")

@@ -13,10 +13,12 @@ from homeassistant.core import callback
 
 from .const import (
     CONF_CONFIG_RESCAN_HOURS,
+    CONF_LIVE_UPDATES,
     CONF_PANEL_ID,
     CONF_SCAN_INTERVAL,
     CONF_ZONE_REFRESH_MINUTES,
     DEFAULT_CONFIG_RESCAN_HOURS,
+    DEFAULT_LIVE_UPDATES,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_ZONE_REFRESH_MINUTES,
     DOMAIN,
@@ -100,6 +102,10 @@ class AlulaOptionsFlow(OptionsFlow):
         opts = self.config_entry.options
         schema = vol.Schema(
             {
+                vol.Required(
+                    CONF_LIVE_UPDATES,
+                    default=opts.get(CONF_LIVE_UPDATES, DEFAULT_LIVE_UPDATES),
+                ): bool,
                 vol.Required(
                     CONF_ZONE_REFRESH_MINUTES,
                     default=opts.get(CONF_ZONE_REFRESH_MINUTES, DEFAULT_ZONE_REFRESH_MINUTES),
