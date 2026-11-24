@@ -144,6 +144,9 @@ class AlulaClient:
         # False = REST-only mode: no WebSocket is opened by the integration
         # (an arm/disarm command still opens one on demand).
         self.ws_enabled = True
+        # False = push-only: after the zones are known, send no requests to the
+        # panel at all (no keypad command, no zone refreshes, no catch-up reads).
+        self.send_panel_requests = True
         self._ws_connected_once = False
         self._keypad_enable_ok = True      # cleared if the panel NAKs virtualKeypadInput
         self._keypad_request_id: str | None = None
@@ -387,7 +390,7 @@ class AlulaClient:
 
         # Enable virtual keypad push stream (triggers virtualKeypadOutput events).
         # Some panels NAK this ("Unsupported command"); stop asking once they do.
-        if self._keypad_enable_ok:
+        if self._keypad_enable_ok and self.send_panel_requests:
             self._keypad_request_id = str(uuid.uuid4())
             await self._ws_send({
                 "channel": WS_CHANNEL,
@@ -402,7 +405,9 @@ class AlulaClient:
 
         # Panel definition / highest used indexes only need fetching once; the
         # socket is re-opened every ~10 minutes and the answers never change.
-        if not self._ws_connected_once or self._highest_zone_index is None:
+        if (not self._ws_connected_once or self._highest_zone_index is None) and (
+            self.send_panel_requests or not self._zones
+        ):
             await self._ws_send({
                 "channel": WS_CHANNEL,
                 "id": str(uuid.uuid4()),
@@ -464,7 +469,7 @@ class AlulaClient:
                 await self.connect_ws()
                 # Pushes sent while we were disconnected are lost, so catch up
                 # (status of programmed zones only), unless the panel is offline.
-                if self.panel_online:
+                if self.panel_online and self.send_panel_requests:
                     await self.fetch_zone_statuses(status_only=True)
                 _LOGGER.debug("Alula WebSocket reconnected")
                 return
@@ -704,6 +709,8 @@ class AlulaClient:
         """
         if not self.ws_enabled:
             return self.zones  # REST-only mode: never talk to the panel over WS
+        if not self.send_panel_requests and self._zones and not force:
+            return self.zones  # push-only: zones are known, updates arrive as events
 
         dev_id = device_id or self._panel_id
         if not dev_id:

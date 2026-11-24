@@ -10,18 +10,23 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult, OptionsFlow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_CONFIG_RESCAN_HOURS,
     CONF_LIVE_UPDATES,
     CONF_PANEL_ID,
     CONF_SCAN_INTERVAL,
+    CONF_UPDATE_MODE,
     CONF_ZONE_REFRESH_MINUTES,
     DEFAULT_CONFIG_RESCAN_HOURS,
     DEFAULT_LIVE_UPDATES,
     DEFAULT_SCAN_INTERVAL,
     DEFAULT_ZONE_REFRESH_MINUTES,
     DOMAIN,
+    MODE_FULL,
+    MODE_PUSH_ONLY,
+    MODE_REST_ONLY,
 )
 
 from .pyalula import AlulaClient
@@ -100,12 +105,24 @@ class AlulaOptionsFlow(OptionsFlow):
             return self.async_create_entry(data=user_input)
 
         opts = self.config_entry.options
+        current_mode = opts.get(CONF_UPDATE_MODE)
+        if current_mode not in (MODE_FULL, MODE_PUSH_ONLY, MODE_REST_ONLY):
+            current_mode = (
+                MODE_FULL
+                if opts.get(CONF_LIVE_UPDATES, DEFAULT_LIVE_UPDATES)
+                else MODE_REST_ONLY
+            )
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_LIVE_UPDATES,
-                    default=opts.get(CONF_LIVE_UPDATES, DEFAULT_LIVE_UPDATES),
-                ): bool,
+                    CONF_UPDATE_MODE, default=current_mode
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[MODE_FULL, MODE_PUSH_ONLY, MODE_REST_ONLY],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                        translation_key=CONF_UPDATE_MODE,
+                    )
+                ),
                 vol.Required(
                     CONF_ZONE_REFRESH_MINUTES,
                     default=opts.get(CONF_ZONE_REFRESH_MINUTES, DEFAULT_ZONE_REFRESH_MINUTES),
