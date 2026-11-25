@@ -71,7 +71,10 @@ async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> Non
     if was_ws and not client.ws_enabled:
         await client.disconnect_ws()  # REST-only from now on
     elif client.ws_enabled and not was_ws:
-        await data[DATA_COORDINATOR].async_request_refresh()  # reconnect now
+        # Zone sensors are only created at setup, and none exist if we started
+        # in REST-only mode, so reload to scan the zones and create them.
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+        return
     _LOGGER.debug(
         "Alula options updated: poll=%ss zone refresh=%ss config rescan=%ss mode=%s",
         scan, zone_refresh, config_rescan, mode,
